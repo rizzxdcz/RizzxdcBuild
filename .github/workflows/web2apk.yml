@@ -1,0 +1,120 @@
+name: Web to APK Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: 'Target Website URL'
+        required: true
+      app_name:
+        description: 'Application Name'
+        required: true
+      icon_url:
+        description: 'Direct URL of Icon (PNG/JPG)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Create PWA Builder Project
+        run: |
+          mkdir -p webapp
+          cd webapp
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+      
+      - name: Create Web Content
+        run: |
+          cd webapp
+          mkdir -p www
+          cat > www/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+            <title>${{ github.event.inputs.app_name }}</title>
+            <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+              iframe { width: 100vw; height: 100vh; border: none; }
+            </style>
+          </head>
+          <body>
+            <iframe src="${{ github.event.inputs.web_url }}" allow="accelerometer; autoplay; camera; geolocation; microphone; payment; usb"></iframe>
+          </body>
+          </html>
+          EOF
+      
+      - name: Download and Process Icon
+        run: |
+          cd webapp
+          # Download icon dari URL
+          wget -O temp_icon.png "${{ github.event.inputs.icon_url }}"
+          
+          # Konversi ke PNG jika perlu dan resize
+          # Buat folder resource untuk Android
+          mkdir -p android/app/src/main/res/
+          
+          # Generate berbagai ukuran icon untuk Android
+          # Menggunakan convert dari ImageMagick (sudah terinstall di runner)
+          for size in 48 72 96 144 192 512; do
+            mkdir -p android/app/src/main/res/mipmap-${size}dpi
+            convert temp_icon.png -resize ${size}x${size} android/app/src/main/res/mipmap-${size}dpi/ic_launcher.png
+          done
+          
+          # Juga buat versi round icon
+          for size in 48 72 96 144 192 512; do
+            mkdir -p android/app/src/main/res/mipmap-${size}dpi
+            convert temp_icon.png -resize ${size}x${size} -background transparent -gravity center -extent ${size}x${size} \
+              android/app/src/main/res/mipmap-${size}dpi/ic_launcher_round.png 2>/dev/null || true
+          done
+          
+          rm temp_icon.png
+      
+      - name: Initialize Capacitor Project
+        run: |
+          cd webapp
+          npx cap init "${{ github.event.inputs.app_name }}" "com.webapp.${{ github.event.inputs.app_name }}" --web-dir www
+          npx cap add android
+      
+      - name: Configure Android Assets
+        run: |
+          cd webapp
+          # Copy icons yang sudah dibuat ke lokasi yang benar
+          cp -r android/app/src/main/res/mipmap-* android/app/src/main/res/
+          
+          # Update strings.xml dengan app name
+          mkdir -p android/app/src/main/res/values
+          cat > android/app/src/main/res/values/strings.xml << EOF
+          <?xml version='1.0' encoding='utf-8'?>
+          <resources>
+              <string name="app_name">${{ github.event.inputs.app_name }}</string>
+              <string name="title_activity_main">${{ github.event.inputs.app_name }}</string>
+              <string name="package_name">com.webapp.${{ github.event.inputs.app_name }}</string>
+              <string name="custom_url_scheme">com.webapp.${{ github.event.inputs.app_name }}</string>
+          </resources>
+          EOF
+      
+      - name: Sync and Build APK
+        run: |
+          cd webapp
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webapp-apk
+          path: webapp/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 3
