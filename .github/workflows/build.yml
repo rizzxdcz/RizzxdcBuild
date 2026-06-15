@@ -1,4 +1,5 @@
 name: Flutter Build Engine
+run-name: Flutter Build [${{ inputs.distinct_id && inputs.distinct_id || 'N/A' }}]
 
 on:
   workflow_dispatch:
@@ -13,6 +14,9 @@ on:
         description: 'debug or release'
         required: true
         default: 'release'
+      distinct_id:
+        description: 'Distinct ID untuk tracking run'
+        required: false
 
 jobs:
   build:
