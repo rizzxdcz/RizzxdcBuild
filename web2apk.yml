@@ -1,0 +1,61 @@
+name: Web to APK Engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: 'Target Website URL'
+        required: true
+      app_name:
+        description: 'Application Name'
+        required: true
+      icon_url:
+        description: 'Direct URL of Icon (PNG)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Create Capacitor Project
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "${{ github.event.inputs.app_name }}" "${{ github.event.inputs.app_name }}" --web-dir www
+      
+      - name: Download & Inject Icon
+        run: |
+          # Download icon dari URL
+          wget -O app_icon.png "${{ github.event.inputs.icon_url }}"
+          # Buat folder resource
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          # Konversi dan resize icon (contoh sederhana)
+          convert app_icon.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+      
+      - name: Generate Web Content
+        run: |
+          mkdir -p www
+          echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${{ github.event.inputs.app_name }}</title><meta http-equiv="refresh" content="0; url=${{ github.event.inputs.web_url }}"></head><body>Loading...</body></html>' > www/index.html
+      
+      - name: Add Android Platform
+        run: npx cap add android
+      
+      - name: Sync & Build APK
+        run: |
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-app
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 3
