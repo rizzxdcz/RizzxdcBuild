@@ -1,5 +1,4 @@
-name: Flutter Build Engine
-run-name: Flutter Build [${{ inputs.distinct_id && inputs.distinct_id || 'N/A' }}]
+name: Flutter Build APK (All Modes)
 
 on:
   workflow_dispatch:
@@ -11,9 +10,14 @@ on:
         description: 'Unique tag for this build'
         required: true
       build_type:
-        description: 'debug or release'
+        description: 'Pilih mode build'
         required: true
         default: 'release'
+        type: choice
+        options:
+          - debug
+          - profile
+          - release
       distinct_id:
         description: 'Distinct ID untuk tracking run'
         required: false
@@ -22,40 +26,61 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     steps:
       - name: Download Source Code
         run: wget -O project.zip "${{ github.event.inputs.source_url }}"
-      
+
       - name: Extract Project
         run: |
           unzip -q project.zip -d ./project
           cd ./project
           echo "PROJECT_DIR=$(pwd)" >> $GITHUB_ENV
-      
+
+      - name: Setup Java 17 (Wajib untuk Flutter terbaru)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
-      
+
       - name: Install Dependencies
         run: |
-          cd ${{ env.PROJECT_DIR }}
+          cd "${{ env.PROJECT_DIR }}"
           flutter pub get
-      
+
+      # ===== SIGNING UNTUK RELEASE (OPSIONAL) =====
+      - name: Setup Keystore for Release
+        if: github.event.inputs.build_type == 'release'
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > ./android/app/keystore.jks
+          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}" > ./android/key.properties
+          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> ./android/key.properties
+          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> ./android/key.properties
+          echo "storeFile=keystore.jks" >> ./android/key.properties
+        working-directory: ${{ env.PROJECT_DIR }}
+
+      # ===== BUILD APK SESUAI MODE =====
       - name: Build APK
         run: |
-          cd ${{ env.PROJECT_DIR }}
+          cd "${{ env.PROJECT_DIR }}"
           if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
             flutter build apk --debug
+          elif [ "${{ github.event.inputs.build_type }}" = "profile" ]; then
+            flutter build apk --profile
           else
             flutter build apk --release
           fi
-      
+
+      # ===== UPLOAD ARTIFACT =====
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-app
-          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+          name: flutter-app-${{ github.event.inputs.build_type }}
+          path: "${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk"
           retention-days: 3
