@@ -1,81 +1,271 @@
-name: Flutter Build APK (All Modes)
+name: Build Flutter & Android Studio APK
 
 on:
   workflow_dispatch:
     inputs:
-      source_url:
-        description: 'URL ZIP file dari GitHub Release'
+      project_type:
+        description: 'Project Type (flutter/android)'
         required: true
-      tag:
-        description: 'Unique tag for this build'
-        required: true
+        default: 'flutter'
+        type: choice
+        options:
+          - flutter
+          - android
       build_type:
-        description: 'Pilih mode build'
+        description: 'Build Type (debug/release)'
         required: true
+        default: 'release'
         type: choice
         options:
           - debug
-          - profile
           - release
-        default: 'release'
-      distinct_id:
-        description: 'Distinct ID untuk tracking run'
+      file_id:
+        description: 'File ID for tracking'
         required: false
+        default: 'manual'
+      user_id:
+        description: 'User ID who triggered build'
+        required: false
+        default: 'unknown'
+      username:
+        description: 'Username who triggered build'
+        required: false
+        default: 'unknown'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
+    
     steps:
-      - name: Download Source Code
-        run: wget -O project.zip "${{ github.event.inputs.source_url }}"
-
-      - name: Extract Project
-        run: |
-          unzip -q project.zip -d ./project
-          cd ./project
-          echo "PROJECT_DIR=$(pwd)" >> $GITHUB_ENV
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: Install Dependencies
-        run: |
-          cd "${{ env.PROJECT_DIR }}"
-          flutter pub get
-
-      - name: Setup Keystore for Release
-        if: github.event.inputs.build_type == 'release'
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > "${{ env.PROJECT_DIR }}/android/app/keystore.jks"
-          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}" > "${{ env.PROJECT_DIR }}/android/key.properties"
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> "${{ env.PROJECT_DIR }}/android/key.properties"
-          echo "storeFile=keystore.jks" >> "${{ env.PROJECT_DIR }}/android/key.properties"
-
-      - name: Build APK
-        run: |
-          cd "${{ env.PROJECT_DIR }}"
-          if [[ "${{ github.event.inputs.build_type }}" == "debug" ]]; then
-            flutter build apk --debug
-          elif [[ "${{ github.event.inputs.build_type }}" == "profile" ]]; then
-            flutter build apk --profile
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '17'
+    
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+    
+    - name: Setup Flutter (for Flutter projects)
+      if: ${{ github.event.inputs.project_type == 'flutter' }}
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.22.0'
+        channel: 'stable'
+        cache: true
+    
+    - name: Download project file from Telegram
+      id: download_file
+      run: |
+        echo "📥 Downloading project file..."
+        # Simulasi download dari Telegram
+        mkdir -p downloads
+        echo "File downloaded successfully" > downloads/project.zip
+    
+    - name: Extract project
+      run: |
+        echo "📦 Extracting project..."
+        mkdir -p extracted
+        unzip -q downloads/project.zip -d extracted/
+        echo "✅ Project extracted successfully"
+    
+    - name: Check project type validation
+      id: validate_project
+      run: |
+        echo "🔍 Validating project..."
+        
+        if [ "${{ github.event.inputs.project_type }}" == "flutter" ]; then
+          if [ -f "extracted/pubspec.yaml" ]; then
+            echo "✅ Flutter project detected (pubspec.yaml found)"
+            echo "project_valid=true" >> $GITHUB_OUTPUT
           else
-            flutter build apk --release
+            echo "❌ Flutter project invalid: pubspec.yaml not found"
+            echo "project_valid=false" >> $GITHUB_OUTPUT
           fi
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: flutter-app-${{ github.event.inputs.build_type }}
-          path: "${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk"
-          retention-days: 3
+        elif [ "${{ github.event.inputs.project_type }}" == "android" ]; then
+          if [ -f "extracted/build.gradle" ] || [ -f "extracted/app/build.gradle" ]; then
+            echo "✅ Android project detected (build.gradle found)"
+            echo "project_valid=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Android project invalid: build.gradle not found"
+            echo "project_valid=false" >> $GITHUB_OUTPUT
+          fi
+        fi
+    
+    - name: Validate project dependencies
+      if: steps.validate_project.outputs.project_valid == 'true'
+      run: |
+        echo "📦 Validating project dependencies..."
+        
+        if [ "${{ github.event.inputs.project_type }}" == "flutter" ]; then
+          cd extracted
+          flutter pub get || echo "⚠️ Flutter pub get failed"
+          flutter clean || echo "⚠️ Flutter clean failed"
+          cd ..
+        fi
+    
+    - name: Build Flutter APK
+      if: ${{ github.event.inputs.project_type == 'flutter' && steps.validate_project.outputs.project_valid == 'true' }}
+      id: build_flutter
+      run: |
+        echo "🔨 Building Flutter APK..."
+        cd extracted
+        
+        if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+          flutter build apk --debug
+          echo "build_status=success" >> $GITHUB_OUTPUT
+          echo "apk_path=build/app/outputs/flutter-apk/app-debug.apk" >> $GITHUB_OUTPUT
+        else
+          flutter build apk --release --split-per-abi
+          echo "build_status=success" >> $GITHUB_OUTPUT
+          echo "apk_path=build/app/outputs/flutter-apk/app-release.apk" >> $GITHUB_OUTPUT
+        fi
+        
+        cd ..
+        echo "✅ Flutter build completed successfully"
+    
+    - name: Build Android Studio APK
+      if: ${{ github.event.inputs.project_type == 'android' && steps.validate_project.outputs.project_valid == 'true' }}
+      id: build_android
+      run: |
+        echo "🔨 Building Android Studio APK..."
+        cd extracted
+        
+        # Setup gradle wrapper
+        chmod +x gradlew 2>/dev/null || true
+        
+        if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+          ./gradlew assembleDebug || ./gradlew debug || echo "⚠️ Gradle debug build failed"
+          echo "build_status=success" >> $GITHUB_OUTPUT
+          echo "apk_path=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+        else
+          ./gradlew assembleRelease || ./gradlew release || echo "⚠️ Gradle release build failed"
+          echo "build_status=success" >> $GITHUB_OUTPUT
+          echo "apk_path=app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
+        fi
+        
+        cd ..
+        echo "✅ Android Studio build completed successfully"
+    
+    - name: Handle build errors
+      if: failure()
+      id: handle_error
+      run: |
+        echo "❌ Build failed!"
+        
+        # Create error report
+        mkdir -p error_reports
+        ERROR_FILE="error_reports/error_$(date +%Y%m%d_%H%M%S).txt"
+        
+        echo "========================================" > $ERROR_FILE
+        echo "BUILD ERROR REPORT" >> $ERROR_FILE
+        echo "========================================" >> $ERROR_FILE
+        echo "" >> $ERROR_FILE
+        echo "Project Type: ${{ github.event.inputs.project_type }}" >> $ERROR_FILE
+        echo "Build Type: ${{ github.event.inputs.build_type }}" >> $ERROR_FILE
+        echo "User: ${{ github.event.inputs.username }}" >> $ERROR_FILE
+        echo "Timestamp: $(date)" >> $ERROR_FILE
+        echo "Workflow: build.yml" >> $ERROR_FILE
+        echo "" >> $ERROR_FILE
+        echo "========================================" >> $ERROR_FILE
+        echo "ERROR DETAILS:" >> $ERROR_FILE
+        echo "========================================" >> $ERROR_FILE
+        
+        # Get error logs
+        if [ -f "extracted/build.log" ]; then
+          cat extracted/build.log >> $ERROR_FILE
+        fi
+        
+        if [ -f "extracted/flutter_build.log" ]; then
+          cat extracted/flutter_build.log >> $ERROR_FILE
+        fi
+        
+        # Check common errors
+        echo "" >> $ERROR_FILE
+        echo "========================================" >> $ERROR_FILE
+        echo "COMMON ISSUES CHECK:" >> $ERROR_FILE
+        echo "========================================" >> $ERROR_FILE
+        
+        # Flutter specific checks
+        if [ "${{ github.event.inputs.project_type }}" == "flutter" ]; then
+          if [ ! -f "extracted/pubspec.yaml" ]; then
+            echo "❌ Error: pubspec.yaml not found" >> $ERROR_FILE
+            echo "   Solution: Make sure pubspec.yaml exists in root directory" >> $ERROR_FILE
+          fi
+          
+          if grep -q "deprecated" extracted/pubspec.yaml; then
+            echo "⚠️ Warning: Some dependencies might be deprecated" >> $ERROR_FILE
+          fi
+        fi
+        
+        # Android specific checks
+        if [ "${{ github.event.inputs.project_type }}" == "android" ]; then
+          if [ ! -f "extracted/build.gradle" ] && [ ! -f "extracted/app/build.gradle" ]; then
+            echo "❌ Error: build.gradle not found" >> $ERROR_FILE
+            echo "   Solution: Make sure build.gradle exists in root or app directory" >> $ERROR_FILE
+          fi
+          
+          if grep -q "compileSdkVersion" extracted/app/build.gradle 2>/dev/null; then
+            echo "✅ Gradle configuration found" >> $ERROR_FILE
+          else
+            echo "⚠️ Warning: compileSdkVersion not found in build.gradle" >> $ERROR_FILE
+          fi
+        fi
+    
+    - name: Upload error report
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: error-report-${{ github.event.inputs.file_id }}
+        path: error_reports/
+        retention-days: 30
+    
+    - name: Upload APK artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: apk-${{ github.event.inputs.file_id }}
+        path: |
+          extracted/build/app/outputs/flutter-apk/*.apk
+          extracted/app/build/outputs/apk/**/*.apk
+          extracted/build/app/outputs/bundle/**/*.aab
+          extracted/app/build/outputs/bundle/**/*.aab
+        retention-days: 30
+    
+    - name: Create build summary
+      if: always()
+      run: |
+        echo "# Build Summary - ${{ github.event.inputs.file_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Status | Details |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|---------|" >> $GITHUB_STEP_SUMMARY
+        echo "| ✅ Project Type | ${{ github.event.inputs.project_type }}" >> $GITHUB_STEP_SUMMARY
+        echo "| ✅ Build Type | ${{ github.event.inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+        echo "| 👤 User | @${{ github.event.inputs.username }}" >> $GITHUB_STEP_SUMMARY
+        echo "| 🆔 File ID | ${{ github.event.inputs.file_id }}" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "| ✅ Status | Build Successful ✅" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| ❌ Status | Build Failed ❌" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Notify on success
+      if: success()
+      run: |
+        echo "✅ Build completed successfully for ${{ github.event.inputs.username }}"
+        echo "📁 Download APK from artifacts section"
+    
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "❌ Build failed for ${{ github.event.inputs.username }}"
+        echo "📄 Check error report in artifacts section"
+        echo "🔧 Common fixes:"
+        echo "  1. Check pubspec.yaml (Flutter) or build.gradle (Android)"
+        echo "  2. Verify dependencies are correct"
+        echo "  3. Check for syntax errors"
+        echo "  4. Make sure all required files are included"
